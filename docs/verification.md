@@ -17,18 +17,24 @@
 - 7 项 pytest 测试通过。
 - JavaScript 语法检查通过，Python 编译检查通过。
 - Uvicorn 启动成功，`/health`、首页、会话端点通过 HTTP 检查。
-- 真实浏览器界面检查未完成：云浏览器无法访问本地 127.0.0.1:8080。
+- 本地地址未能由云浏览器访问；部署后的公网首页已通过浏览器检查。
 
-## 部署前仍需完成
+## Railway 部署与线上验收
 
-1. 用户确定 GitHub 源码仓库；当前 Railway 的 GitHub 部署入口要求
-   先确定仓库，不允许猜测。当前环境没有可直接使用的 Railway CLI 凭据。
-2. 将代码推送到该仓库，创建 Railway 服务、挂载 /data 持久卷、设置密钥，
-   部署后检查健康状态及手机页面。
-3. 用户本人扫码确认，验证真实登录返回的 Token 与逐字稿接口兼容性。
+- 用户已确认创建私有仓库 `yantze/xiaoyuzhou-juicer-service`，代码已推送 main。
+- 公网地址：https://transcript-reader-production.up.railway.app
+- Railway 项目：`52dcc7bb-f2da-43c2-9d05-1afb98b58280`。
+- production 环境：`a3d602a1-76f1-4588-8864-cb08506ddc2f`。
+- transcript-reader 服务：`8716cf68-f182-4198-93c9-963e23f53bbf`。
+- 部署 `4ab6f8f0-0e39-42eb-98c5-1a4911c1b87d` 状态 SUCCESS。
+- 已挂载 `/data` 持久卷，配置独立加密密钥、Secure Cookie、一个副本。
+- 公网首页、健康检查、会话接口均 HTTP 200。
+- 线上二维码创建 HTTP 200 / WAITTING，二维码图片 HTTP 200，轮询 HTTP 200 / WAITTING。
+- 未登录测试会话不能读取文稿；已清除该测试会话。
+- 浏览器页面正常进入未连接状态，生成二维码按钮可用，获取文稿按钮按预期禁用。
 
-当前尚未部署 Railway，尚无公网服务地址。未经真实扫码，不宣称
-“扫码登录到逐字稿下载”端到端链路已验证。
+仍需用户本人扫码确认，以验证真实 Token 与逐字稿接口的兼容性。
+未经真实扫码，不宣称“扫码登录到逐字稿下载”端到端链路已验证。
 
 ## 测试替身范围
 
