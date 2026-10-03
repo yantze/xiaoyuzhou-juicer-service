@@ -1,11 +1,9 @@
 import asyncio
-import hashlib
 import io
 import json
 import os
 import secrets
 import time
-from collections import defaultdict, deque
 from pathlib import Path
 
 import httpx
@@ -16,7 +14,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .provider import ProviderError, Xiaoyuzhou, episode_id, timestamp
-from .storage import Store
+from .postgres import StorageError
+from .store_backend import create_backend
 
 STATIC = Path(__file__).parent / "static"
 COOKIE = "xyz_session"
@@ -24,34 +23,14 @@ COOKIE = "xyz_session"
 
 def create_app(store=None, provider=None):
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
-    db = store or Store(os.getenv("DATA_DIR", "./data"), os.getenv("TOKEN_ENCRYPTION_KEY"))
+    db = create_backend(store)
     xyz = provider or Xiaoyuzhou()
-    locks = [asyncio.Lock() for _ in range(128)]
-    limits = defaultdict(deque)
     capacity = asyncio.Semaphore(12)
     app.state.store = db
 
-    def lock(sid):
-        return locks[int(hashlib.sha256(sid.encode()).hexdigest()[:8], 16) % len(locks)]
-
-    def limit(key, count, window):
-        now = time.monotonic()
-        if len(limits) > 10000:
-            for k in list(limits):
-                if not limits[k] or limits[k][-1] < now - 3600:
-                    del limits[k]
-            if len(limits) > 10000:
-                raise ProviderError("RATE_LIMIT", "服务繁忙，请稍后再试。", 429)
-        q = limits[key]
-        while q and q[0] < now - window:
-            q.popleft()
-        if len(q) >= count:
-            raise ProviderError("RATE_LIMIT", "操作过于频繁，请稍后再试。", 429)
-        q.append(now)
-
-    def session(request):
+    async def session(request):
         sid = request.cookies.get(COOKIE)
-        data = db.load(sid)
+        data = await db.load(sid)
         if data is None:
             raise ProviderError("SESSION_EXPIRED", "页面会话已过期，请刷新页面。", 401)
         if request.method != "GET" and not secrets.compare_digest(request.headers.get("x-csrf-token", ""), data["csrf"]):
@@ -85,8 +64,17 @@ def create_app(store=None, provider=None):
         # Never reflect upstream URLs, headers or cookie jars in errors/logs.
         return JSONResponse({"error": "连接小宇宙超时或网络异常，请稍后再试。", "code": "NETWORK_ERROR"}, status_code=502)
 
+    @app.exception_handler(StorageError)
+    async def storage_error(request, e):
+        return JSONResponse({"error": str(e), "code": "STORAGE_UNAVAILABLE"}, status_code=503)
+
+    @app.exception_handler(TimeoutError)
+    async def request_timeout(request, e):
+        return JSONResponse({"error": "请求处理超时，请稍后重试。", "code": "REQUEST_TIMEOUT"}, status_code=504)
+
     @app.get("/health")
     async def health():
+        await db.health()
         return {"ok": True}
 
     @app.get("/")
@@ -96,10 +84,10 @@ def create_app(store=None, provider=None):
     @app.get("/api/session")
     async def status(request: Request):
         sid = request.cookies.get(COOKIE)
-        data = db.load(sid)
+        data = await db.load(sid)
         if data is None:
-            limit(("new-session", request.client.host), 60, 3600)
-            sid, data = db.create()
+            await db.limit(("new-session", (request.client.host if request.client else "unknown")), 60, 3600)
+            sid, data = await db.create()
         result = data.get("result")
         response = JSONResponse({"connected": bool(data.get("tokens")), "user": data.get("user"),
             "csrf": data["csrf"], "lastEpisode": result["meta"]["eid"] if result else None})
@@ -109,19 +97,19 @@ def create_app(store=None, provider=None):
 
     @app.post("/api/auth/qr")
     async def start_qr(request: Request):
-        sid, _ = session(request)
-        limit(("qr", request.client.host), 20, 3600)
-        async with lock(sid), capacity:
-            data = db.load(sid)
+        sid, _ = await session(request)
+        await db.limit(("qr", (request.client.host if request.client else "unknown")), 20, 3600)
+        async with asyncio.timeout(100), capacity, db.lock(sid):
+            data = await db.load(sid)
             if not data:
                 raise ProviderError("SESSION_EXPIRED", "页面会话已过期，请刷新页面。", 401)
             data["qr"] = await xyz.create_qr()
-            db.save(sid, data)
+            await db.save(sid, data)
             return {"status": "WAITTING", "expiresAt": data["qr"]["expires"]}
 
     @app.get("/api/auth/qr/image")
     async def qr_image(request: Request):
-        _, data = session(request)
+        _, data = await session(request)
         qr = data.get("qr")
         if not qr or qr["expires"] <= time.time():
             raise ProviderError("QR_EXPIRED", "二维码已过期，请重新生成。", 410)
@@ -132,9 +120,9 @@ def create_app(store=None, provider=None):
 
     @app.post("/api/auth/qr/poll")
     async def poll(request: Request):
-        sid, _ = session(request)
-        async with lock(sid), capacity:
-            data = db.load(sid)
+        sid, _ = await session(request)
+        async with asyncio.timeout(100), capacity, db.lock(sid):
+            data = await db.load(sid)
             if not data:
                 raise ProviderError("SESSION_EXPIRED", "页面会话已过期，请刷新页面。", 401)
             qr = data.get("qr")
@@ -142,7 +130,7 @@ def create_app(store=None, provider=None):
                 return {"status": "CONFIRMED" if data.get("tokens") else "EXPIRED"}
             if qr["expires"] <= time.time():
                 data.pop("qr", None)
-                db.save(sid, data)
+                await db.save(sid, data)
                 return {"status": "EXPIRED"}
             if time.time() - qr["last_poll"] < 1.5:
                 return {"status": qr["status"]}
@@ -153,14 +141,14 @@ def create_app(store=None, provider=None):
                 data.pop("qr", None)
             else:
                 data["qr"] = qr
-            db.save(sid, data)
+            await db.save(sid, data)
             return {"status": qr["status"], "user": user}
 
     @app.post("/api/auth/logout")
     async def logout(request: Request):
-        sid, _ = session(request)
-        async with lock(sid):
-            db.delete(sid)
+        sid, _ = await session(request)
+        async with asyncio.timeout(100), db.lock(sid):
+            await db.delete(sid)
         response = JSONResponse({"ok": True})
         response.delete_cookie(COOKIE, path="/")
         return response
@@ -171,10 +159,10 @@ def create_app(store=None, provider=None):
     @app.post("/api/transcripts")
     async def fetch_transcript(request: Request, body: EpisodeInput):
         eid = episode_id(body.url)
-        sid, _ = session(request)
-        limit(("transcript", sid), 20, 3600)
-        async with lock(sid), capacity:
-            data = db.load(sid)
+        sid, _ = await session(request)
+        await db.limit(("transcript", sid), 20, 3600)
+        async with asyncio.timeout(100), capacity, db.lock(sid):
+            data = await db.load(sid)
             if not data or not data.get("tokens"):
                 raise ProviderError("LOGIN_REQUIRED", "请先连接你的小宇宙账号。", 401)
             if data.get("result", {}).get("meta", {}).get("eid") == eid:
@@ -185,31 +173,31 @@ def create_app(store=None, provider=None):
             tokens = data["tokens"]
             if tokens.get("expires", 0) <= time.time():
                 tokens = data["tokens"] = await xyz.refresh(tokens, data["device"])
-                db.save(sid, data)  # Persist the rotated token before another network request.
+                await db.save(sid, data)  # Persist the rotated token before another network request.
             try:
                 segments = await xyz.transcript(meta, tokens, data["device"])
             except ProviderError as e:
                 if e.status != 401 or not tokens.get("refresh"):
                     raise
                 tokens = data["tokens"] = await xyz.refresh(tokens, data["device"])
-                db.save(sid, data)
+                await db.save(sid, data)
                 segments = await xyz.transcript(meta, tokens, data["device"])
             result = {"meta": {k: v for k, v in meta.items() if k not in ("media_id", "shownotes")},
                       "segments": segments, "source": "xiaoyuzhou-asr", "fetchedAt": time.time()}
             data["result"] = result
-            db.save(sid, data)
+            await db.save(sid, data)
             return result
 
     @app.get("/api/transcripts/latest")
     async def last_transcript(request: Request):
-        _, data = session(request)
+        _, data = await session(request)
         if not data.get("result"):
             raise ProviderError("NOT_FOUND", "还没有获取逐字稿。", 404)
         return data["result"]
 
     @app.get("/api/transcripts/download/{fmt}")
     async def download(request: Request, fmt: str):
-        _, data = session(request)
+        _, data = await session(request)
         result = data.get("result")
         if not result:
             raise ProviderError("NOT_FOUND", "还没有获取逐字稿。", 404)

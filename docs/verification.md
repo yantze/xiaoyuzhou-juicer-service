@@ -40,3 +40,31 @@
 
 测试替身仅用于 tests/ 中，生产 Provider 始终连接平台真实接口。
 模拟扫码确认不证明真实授权成功；模拟文稿也不会进入生产页面。
+
+## Vercel / Supabase 适配验证（2026-10-03 UTC）
+
+本次使用新数据库表，不迁移 Railway 登录状态或历史文稿。
+
+- 新增 Vercel 原生 FastAPI `asgi.py` 入口和 `vercel.json`，配置函数最长 120 秒。
+- `VERCEL=1` 时验证入口选择 PostgreSQL，不创建 SQLite 文件；缺少连接或加密密钥时明确报错。
+- 新的 `xyz_juicer` schema 包含加密会话、跨实例租约和共享限流；初始化脚本可重复执行，
+  验证重复初始化未改变已有的其他 schema 测试表。
+- 14 项 pytest 通过，包括原有 7 项功能测试和 7 项新配置/PostgreSQL 测试。
+- 当前容器不能创建系统用户或切换 UID，原生 PostgreSQL 的本地启动受限。
+  数据库集成测试实际使用 PostgreSQL WASM 引擎 PGlite 0.5.8，经官方 `pglite-socket` 0.2.11
+  TCP 适配器连接 Psycopg，未模拟 SQL 返回值；它不能代替 Supabase/原生 PostgreSQL 的全部环境验收。
+- 已补 GitHub Actions 的 PostgreSQL 17 service 验证，线上执行结果需查看对应 commit 的 CI。
+- 覆盖不同应用实例读取同一加密会话、原始 Token 不以明文存储、匿名/登录浏览器角色无数据读取权限、
+  共享限流、过期租约拒绝旧请求写入、注销后拒绝恢复会话。
+- 跨实例执行模拟扫码确认、Token 续期、下载失败后的新 Token 保留、Markdown/TXT/JSON 下载与注销；
+  并发获取不会把同一 Token 续期两次。
+- 在一次性数据库上实际执行 `scripts/migrate.py` 成功，首页、静态文件、`/health` 和新会话均可用。
+- 使用生产 Provider 实测官方二维码创建：HTTP 200 / WAITTING；图片 HTTP 200 / image/png；
+  轮询 HTTP 200 / WAITTING；测试结束后删除测试会话，未输出或保存真实二维码标识与账号 Token。
+- 当前公开单集 `6aa127229d3264778166855e` 元信息读取成功，仍包含平台文稿 media ID。
+- Python 编译、JavaScript 语法、Git diff 空白检查和依赖清单一致性检查通过。
+
+发布状态：尚未部署到 Vercel，尚未初始化用户实际 Supabase 数据库。
+Vercel 连接插件可以查看项目，但其部署操作返回 UNAVAILABLE；命令行尚待账号授权，
+当前未取得新项目的 Supabase 连接变量。未生成新的 Vercel 网站地址。
+真实扫码确认与账号文稿获取仍需用户完成，不能把替身测试作为端到端生产验收。

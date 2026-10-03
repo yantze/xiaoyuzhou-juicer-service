@@ -31,7 +31,10 @@ async function startQR() {
         if (data.status === 'EXPIRED') { $('qr-status').textContent = '二维码已过期，请重新生成'; return; }
         $('qr-status').textContent = data.status === 'SCANNED' ? '扫码成功，请在手机上确认登录' : '等待扫码 · ' + Math.ceil((qrDeadline - Date.now()) / 1000) + ' 秒';
         pollTimer = setTimeout(poll, 2000);
-      } catch (error) { $('qr-status').textContent = '连接未完成'; message(error.message, true); }
+      } catch (error) {
+        if (error.code === 'SESSION_BUSY' && generation === qrGeneration) { pollTimer = setTimeout(poll, 2000); return; }
+        $('qr-status').textContent = '连接未完成'; message(error.message, true);
+      }
     };
     pollTimer = setTimeout(poll, 1800);
   } catch (error) { message(error.message, true); }
