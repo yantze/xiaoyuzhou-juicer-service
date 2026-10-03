@@ -26,6 +26,10 @@ COOKIE_SECURE=false DATA_DIR=./data .venv/bin/uvicorn app.main:create_app --fact
 
 ## Vercel + 已连接的 Supabase
 
+当前生产地址：[https://xiaoyuzhou-juicer.vercel.app](https://xiaoyuzhou-juicer.vercel.app)。
+Vercel 项目 `xiaoyuzhou-juicer` 已关联 Supabase `supabase-violet-flower`；
+生产分支为 `feat/vercel-supabase`，函数区域为新加坡 `sin1`。
+
 此部署从全新会话开始，不导入 Railway 登录状态或历史文稿。新域名首次访问需要扫码登录。
 `asgi.py` 导出 Vercel 原生 FastAPI 入口，页面和 API 同域，不需要另开容器或常驻 Worker。
 
@@ -44,6 +48,7 @@ COOKIE_SECURE=false DATA_DIR=./data .venv/bin/uvicorn app.main:create_app --fact
    `SUPABASE_URL`/匿名 API key 不能代替 PostgreSQL 连接串。数据库密码和加密密钥均不得使用 `NEXT_PUBLIC_` 前缀。
    运行时关闭 prepared statements；每个实例最多并行一个数据库操作，网络等待期间不持有数据库连接。
    远程数据库强制 SSL，保留连接串中更强的 `verify-full` 验证配置。
+   自动移除 Marketplace 连接 URL 的 `supa` 标记，避免将它作为不支持的 libpq 参数。
 
    密钥生成：
 
