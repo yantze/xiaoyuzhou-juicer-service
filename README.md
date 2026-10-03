@@ -9,7 +9,7 @@
 - 后台读取小宇宙原始文稿，不把 shownotes/摘要当成逐字稿。
 - 时间戳、关键词搜索、复制全文、Markdown/TXT/JSON 下载。
 - 不同浏览器会话隔离；HttpOnly Cookie、CSRF 检查、请求限流。
-- 凭证与最后一份文稿加密保存至 SQLite；断开连接清除本服务的数据。
+- 凭证与最后一份文稿加密保存；Vercel 使用 Supabase PostgreSQL，本地/Railway 可继续用 SQLite。
 - Token 轮换后立即持久化，避免后续下载失败导致刷新凭证丢失。
 - 不把账号 Token 暴露给页面，不将账号 Token 发送给文稿 CDN。
 
@@ -23,6 +23,56 @@ COOKIE_SECURE=false DATA_DIR=./data .venv/bin/uvicorn app.main:create_app --fact
 
 打开 http://localhost:8080 。生产环境须保留 `COOKIE_SECURE=true` 并通过 HTTPS 访问。
 本机密钥会首次生成到 `DATA_DIR/encryption.key`，权限为 0600。
+
+## Vercel + 已连接的 Supabase
+
+此部署从全新会话开始，不导入 Railway 登录状态或历史文稿。新域名首次访问需要扫码登录。
+`asgi.py` 导出 Vercel 原生 FastAPI 入口，页面和 API 同域，不需要另开容器或常驻 Worker。
+
+1. 在 Vercel 创建独立项目，导入此仓库；框架使用 **FastAPI**，Root Directory 保持仓库根目录。
+   若使用本适配分支发布，把项目的 Production Branch 设为 `feat/vercel-supabase`。
+   不要覆盖其他现有 Vercel 项目。
+2. 将**已连接的 Supabase 资源**关联到这个新项目。连接器里已有数据库资源，并不代表新项目自动获得连接变量。
+3. 为 Production 和 Preview 配置服务端变量：
+
+   | 变量 | 设置 |
+   | --- | --- |
+   | `DATABASE_URL` 或 `POSTGRES_URL` | Supabase **Transaction pooler** 连接串；代码也接受 `SUPABASE_DB_URL` |
+   | `TOKEN_ENCRYPTION_KEY` | 新生成的 Fernet 密钥，作为敏感变量保存，后续部署保持不变 |
+   | `COOKIE_SECURE` | `true`，也是默认值 |
+
+   `SUPABASE_URL`/匿名 API key 不能代替 PostgreSQL 连接串。数据库密码和加密密钥均不得使用 `NEXT_PUBLIC_` 前缀。
+   运行时关闭 prepared statements；每个实例最多并行一个数据库操作，网络等待期间不持有数据库连接。
+   远程数据库强制 SSL，保留连接串中更强的 `verify-full` 验证配置。
+
+   密钥生成：
+
+   ```sh
+   python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'
+   ```
+
+4. 在 Supabase SQL Editor 执行 `migrations/001_supabase.sql`，或将敏感变量安全导入本地环境后执行：
+
+   ```sh
+   .venv/bin/python scripts/migrate.py
+   ```
+
+   可用 `MIGRATION_DATABASE_URL` 单独配置管理连接。脚本仅创建私有 `xyz_juicer` schema 及其三张表，
+   不修改现有业务表；脚本可重复运行，不导入旧数据。表启用 RLS，并禁止 `anon`/`authenticated` 读取。
+   数据库初始化是单独的操作，函数启动和构建阶段不会自动执行 DDL。
+5. 初始化成功后部署。Vercel 函数时限 120 秒，扫码与获取请求在 100 秒内返回可识别的超时错误。
+   会话更新使用数据库租约，防止不同实例同时刷新账号 Token；过期请求不能覆盖新会话。
+6. 检查 `/health` HTTP 200（会验证数据库表），再检查首页、`/api/session`、二维码生成/轮询。
+   真实扫码和文稿下载需要账号所有者在 App 中确认后验证。
+
+Vercel 环境缺少数据库连接时会明确报错，不回退到本地 SQLite。登录信息和最后一份文稿有效期 30 天，
+过期记录在新建会话时分批清理；服务端没有未加密的账号 Token 表，也没有前端 Supabase 直连。
+
+Preview 如需独立测试，连接另一份 Supabase 测试数据库。Production/Preview 共用数据库时必须使用同一加密密钥，
+否则各部署不能解密同一库里的会话。数据库与 Vercel 函数区域尽量靠近，以降低每次请求的网络往返时间。
+
+参考：[Vercel FastAPI](https://vercel.com/docs/frameworks/backend/fastapi)、
+[Supabase 连接池](https://supabase.com/docs/guides/database/connecting-to-postgres)。
 
 ## Railway 部署
 
@@ -65,10 +115,21 @@ Dockerfile 信任平台传入的代理头，应部署在 Railway 的 HTTP 代理
 ## 验证
 
 ```sh
-.venv/bin/pip install pytest
+.venv/bin/pip install -r requirements-dev.txt
 .venv/bin/python -m pytest -q
 node --check app/static/app.js
 ```
 
 测试使用明确的 test-only 凭证，覆盖会话隔离、CSRF、Token 轮换持久化、
 扫码过期、重启存储、Cookie 提取、CDN 凭证隔离和输入验证。
+
+PostgreSQL 集成验证使用临时本地数据库：
+
+```sh
+RUN_POSTGRES_TESTS=1 .venv/bin/python -m pytest -q
+```
+
+此命令使用 `pgserver` 创建临时 PostgreSQL；本地系统需允许它以非 root 用户启动 PostgreSQL。
+已有一次性本地测试实例时可显式设置 `LOCAL_POSTGRES_TEST_URL`；仅接受 loopback 地址。
+测试会创建测试角色和表，不能指向业务数据库。GitHub Actions 使用独立 PostgreSQL 17 service。
+覆盖跨实例会话、共享限流、过期租约写保护、注销后不能恢复会话，以及 Token 轮换后下载失败的持久化。
