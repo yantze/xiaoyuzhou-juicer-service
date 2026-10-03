@@ -53,7 +53,8 @@
 - 当前容器不能创建系统用户或切换 UID，原生 PostgreSQL 的本地启动受限。
   数据库集成测试实际使用 PostgreSQL WASM 引擎 PGlite 0.5.8，经官方 `pglite-socket` 0.2.11
   TCP 适配器连接 Psycopg，未模拟 SQL 返回值；它不能代替 Supabase/原生 PostgreSQL 的全部环境验收。
-- 已补 GitHub Actions 的 PostgreSQL 17 service 验证，线上执行结果需查看对应 commit 的 CI。
+- GitHub Actions 的 PostgreSQL 17 service 验证通过：
+  https://github.com/yantze/xiaoyuzhou-juicer-service/actions/runs/37105374836 。
 - 覆盖不同应用实例读取同一加密会话、原始 Token 不以明文存储、匿名/登录浏览器角色无数据读取权限、
   共享限流、过期租约拒绝旧请求写入、注销后拒绝恢复会话。
 - 跨实例执行模拟扫码确认、Token 续期、下载失败后的新 Token 保留、Markdown/TXT/JSON 下载与注销；
@@ -64,7 +65,22 @@
 - 当前公开单集 `6aa127229d3264778166855e` 元信息读取成功，仍包含平台文稿 media ID。
 - Python 编译、JavaScript 语法、Git diff 空白检查和依赖清单一致性检查通过。
 
-发布状态：尚未部署到 Vercel，尚未初始化用户实际 Supabase 数据库。
-Vercel 连接插件可以查看项目，但其部署操作返回 UNAVAILABLE；命令行尚待账号授权，
-当前未取得新项目的 Supabase 连接变量。未生成新的 Vercel 网站地址。
+### Vercel 生产发布与真实 Supabase 验收
+
+- 用户完成 Vercel CLI 授权；创建独立项目 `xiaoyuzhou-juicer`，不覆盖其他项目。
+- 关联已有 Supabase `supabase-violet-flower`，使用 Transaction pooler、SSL 与全新敏感加密密钥。
+- Marketplace URL 带 `supa` 标记；新增兼容处理并验证不会丢失 SSL 设置或转义密码。
+  最后本地回归 9 项通过；6 项数据库集成测试未在当前容器重复运行。
+- 在 Vercel 临时部署中初始化真实 Supabase PostgreSQL 17.11；验证应用表可用、初始化时会话数为 0。
+  初始化请求同时使用 Vercel 访问保护和独立请求头校验；临时部署已删除，正式站没有初始化路由。
+- 正式地址：https://xiaoyuzhou-juicer.vercel.app 。
+- 生产部署：`dpl_ADgB4F9Ecf6JwqdyF3TPwDv3VXkh`，状态 READY。
+- 项目生产分支为 `feat/vercel-supabase`，函数实际运行于新加坡 `sin1`。
+- 无需 Vercel 登录即可访问：首页、静态 JavaScript、`/health`、`/api/session` 均 HTTP 200。
+- `/health` 实际检查 Supabase 三张应用表；新会话未连接账号，连续请求保持同一会话。
+- Cookie 验证 Secure、HttpOnly、SameSite=Strict。
+- 真实小宇宙接口：二维码创建 HTTP 200 / WAITTING，二维码图片 HTTP 200 / image/png，
+  轮询 HTTP 200 / WAITTING；未登录获取逐字稿 HTTP 401。
+- 扫码测试会话通过注销接口清除，HTTP 200；未迁移旧登录状态或历史文稿。
+
 真实扫码确认与账号文稿获取仍需用户完成，不能把替身测试作为端到端生产验收。
