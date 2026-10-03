@@ -51,6 +51,17 @@ def make_store(postgres):
     return PostgresStore(*postgres)
 
 
+def test_marketplace_url_accepts_integration_marker_without_losing_ssl():
+    store = PostgresStore(
+        "postgres://postgres.example:p%40ss@pooler.example.com:6543/postgres?sslmode=verify-full&supa=fixture",
+        Fernet.generate_key().decode(),
+    )
+    assert store.connection_options["password"] == "p@ss"
+    assert store.connection_options["sslmode"] == "verify-full"
+    assert store.connection_options["port"] == "6543"
+    assert "supa" not in store.connection_options
+
+
 def test_backend_requires_durable_configuration(tmp_path, monkeypatch):
     for name in ("DATABASE_URL", "POSTGRES_URL", "SUPABASE_DB_URL"):
         monkeypatch.delenv(name, raising=False)
