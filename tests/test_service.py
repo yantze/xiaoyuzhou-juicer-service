@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 from app.main import create_app
 from app.provider import ProviderError, Xiaoyuzhou, allowed_cdn, episode_id, normalize_segments, parse_metadata
-from app.storage import Store
+from sqlite_store import Store, SQLiteBackend
 
 EID = "6aa127229d3264778166855e"
 
@@ -43,7 +43,7 @@ def setup(tmp_path, monkeypatch):
     monkeypatch.setenv("COOKIE_SECURE", "false")
     store = Store(str(tmp_path))
     provider = FakeProvider()
-    app = create_app(store, provider)
+    app = create_app(SQLiteBackend(store), provider)
     with TestClient(app) as client:
         yield app, client, store, provider
 
