@@ -1,13 +1,17 @@
-"""Single-replica encrypted session store. The key must survive redeploys."""
+"""Test-only encrypted disk fixture; never imported by the application."""
+import asyncio
 import hashlib
 import json
 import os
 import secrets
 import sqlite3
 import time
+from collections import defaultdict, deque
 from pathlib import Path
 
 from cryptography.fernet import Fernet
+
+from app.provider import ProviderError
 
 
 class Store:
@@ -59,3 +63,47 @@ class Store:
     def delete(self, sid):
         with self.connect() as conn:
             conn.execute("DELETE FROM sessions WHERE id=?", (self.digest(sid),))
+
+
+
+class SQLiteBackend:
+    def __init__(self, store):
+        self.store = store
+        self.locks = [asyncio.Lock() for _ in range(128)]
+        self.limits = defaultdict(deque)
+
+    async def create(self):
+        return await asyncio.to_thread(self.store.create)
+
+    async def load(self, sid):
+        return await asyncio.to_thread(self.store.load, sid)
+
+    async def save(self, sid, data):
+        await asyncio.to_thread(self.store.save, sid, data)
+
+    async def delete(self, sid):
+        await asyncio.to_thread(self.store.delete, sid)
+
+    async def health(self):
+        def check():
+            with self.store.connect() as conn:
+                conn.execute("SELECT 1 FROM sessions LIMIT 0")
+        await asyncio.to_thread(check)
+
+    def lock(self, sid):
+        return self.locks[int(hashlib.sha256(sid.encode()).hexdigest()[:8], 16) % len(self.locks)]
+
+    async def limit(self, key, count, window):
+        now = time.monotonic()
+        if len(self.limits) > 10000:
+            for k in list(self.limits):
+                if not self.limits[k] or self.limits[k][-1] < now - 3600:
+                    del self.limits[k]
+            if len(self.limits) > 10000:
+                raise ProviderError("RATE_LIMIT", "服务繁忙，请稍后再试。", 429)
+        q = self.limits[key]
+        while q and q[0] < now - window:
+            q.popleft()
+        if len(q) >= count:
+            raise ProviderError("RATE_LIMIT", "操作过于频繁，请稍后再试。", 429)
+        q.append(now)

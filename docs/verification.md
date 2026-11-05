@@ -19,23 +19,6 @@
 - Uvicorn 启动成功，`/health`、首页、会话端点通过 HTTP 检查。
 - 本地地址未能由云浏览器访问；部署后的公网首页已通过浏览器检查。
 
-## Railway 部署与线上验收
-
-- 用户已确认创建私有仓库 `yantze/xiaoyuzhou-juicer-service`，代码已推送 main。
-- 公网地址：https://transcript-reader-production.up.railway.app
-- Railway 项目：`52dcc7bb-f2da-43c2-9d05-1afb98b58280`。
-- production 环境：`a3d602a1-76f1-4588-8864-cb08506ddc2f`。
-- transcript-reader 服务：`8716cf68-f182-4198-93c9-963e23f53bbf`。
-- 部署 `4ab6f8f0-0e39-42eb-98c5-1a4911c1b87d` 状态 SUCCESS。
-- 已挂载 `/data` 持久卷，配置独立加密密钥、Secure Cookie、一个副本。
-- 公网首页、健康检查、会话接口均 HTTP 200。
-- 线上二维码创建 HTTP 200 / WAITTING，二维码图片 HTTP 200，轮询 HTTP 200 / WAITTING。
-- 未登录测试会话不能读取文稿；已清除该测试会话。
-- 浏览器页面正常进入未连接状态，生成二维码按钮可用，获取文稿按钮按预期禁用。
-
-仍需用户本人扫码确认，以验证真实 Token 与逐字稿接口的兼容性。
-未经真实扫码，不宣称“扫码登录到逐字稿下载”端到端链路已验证。
-
 ## 测试替身范围
 
 测试替身仅用于 tests/ 中，生产 Provider 始终连接平台真实接口。
@@ -43,10 +26,10 @@
 
 ## Vercel / Supabase 适配验证（2026-10-03 UTC）
 
-本次使用新数据库表，不迁移 Railway 登录状态或历史文稿。
+本次使用独立的 Supabase 数据库表。
 
 - 新增 Vercel 原生 FastAPI `asgi.py` 入口和 `vercel.json`，配置函数最长 120 秒。
-- `VERCEL=1` 时验证入口选择 PostgreSQL，不创建 SQLite 文件；缺少连接或加密密钥时明确报错。
+- 运行入口使用 PostgreSQL；缺少连接或加密密钥时明确报错。
 - 新的 `xyz_juicer` schema 包含加密会话、跨实例租约和共享限流；初始化脚本可重复执行，
   验证重复初始化未改变已有的其他 schema 测试表。
 - 14 项 pytest 通过，包括原有 7 项功能测试和 7 项新配置/PostgreSQL 测试。
@@ -84,3 +67,12 @@
 - 扫码测试会话通过注销接口清除，HTTP 200；未迁移旧登录状态或历史文稿。
 
 真实扫码确认与账号文稿获取仍需用户完成，不能把替身测试作为端到端生产验收。
+
+## Vercel 单一部署路径清理（2026-11-05 UTC）
+
+- 网页与 API 统一由 `asgi.py` 导出的 FastAPI 应用提供。
+- 移除容器部署配置和生产 SQLite 回退；本地开发同样要求 PostgreSQL 与显式加密密钥。
+- SQLite 仅作为 `tests/` 内的临时加密存储测试夹具，发布时由 `.vercelignore` 排除。
+- `RUN_POSTGRES_TESTS=1 .venv/bin/python -m pytest -q`：16 项通过，包含临时本地 PostgreSQL 集成测试。
+- JavaScript 语法、Python 编译和 diff 空白检查通过。
+- 历史验证记录不代表本次执行了真实扫码验收或生产发布。
