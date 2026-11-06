@@ -9,24 +9,40 @@
 - 后台读取小宇宙原始文稿，不把 shownotes/摘要当成逐字稿。
 - 时间戳、关键词搜索、复制全文、Markdown/TXT/JSON 下载。
 - 不同浏览器会话隔离；HttpOnly Cookie、CSRF 检查、请求限流。
-- 凭证与最后一份文稿加密保存；Vercel 使用 Supabase PostgreSQL，本地/Railway 可继续用 SQLite。
+- 凭证与最后一份文稿加密保存；Vercel 与本地开发统一使用 Supabase/PostgreSQL。
 - Token 轮换后立即持久化，避免后续下载失败导致刷新凭证丢失。
 - 不把账号 Token 暴露给页面，不将账号 Token 发送给文稿 CDN。
+
+## 请求与存储
+
+浏览器 → Vercel FastAPI → 小宇宙接口 / 文稿 CDN。
+Vercel 同时提供网页和 API；会话、账号 Token 和最后一份文稿加密保存在 Supabase PostgreSQL。
+扫码、Token 刷新和文稿获取均由 Vercel 后端直接发起。
 
 ## 本地运行
 
 ```sh
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
-COOKIE_SECURE=false DATA_DIR=./data .venv/bin/uvicorn app.main:create_app --factory --host 0.0.0.0 --port 8080 --workers 1 --no-access-log
 ```
 
-打开 http://localhost:8080 。生产环境须保留 `COOKIE_SECURE=true` 并通过 HTTPS 访问。
-本机密钥会首次生成到 `DATA_DIR/encryption.key`，权限为 0600。
+在本地进程环境中设置 `DATABASE_URL`（独立开发 PostgreSQL）与 `TOKEN_ENCRYPTION_KEY`，
+先按下文执行数据库初始化，再启动：
+
+```sh
+COOKIE_SECURE=false .venv/bin/uvicorn asgi:app --host 0.0.0.0 --port 8080 --no-access-log
+```
+
+打开 http://localhost:8080 。本地也必须提供数据库和加密密钥；生产环境保留 `COOKIE_SECURE=true`。
+不要将本地测试指向生产数据库，也不要将连接串或密钥提交到仓库。
 
 ## Vercel + 已连接的 Supabase
 
-此部署从全新会话开始，不导入 Railway 登录状态或历史文稿。新域名首次访问需要扫码登录。
+当前生产地址：[https://xiaoyuzhou-juicer.vercel.app](https://xiaoyuzhou-juicer.vercel.app)。
+Vercel 项目 `xiaoyuzhou-juicer` 已关联 Supabase `supabase-violet-flower`；
+生产分支为 `feat/vercel-supabase`，函数区域为新加坡 `sin1`。
+
+新浏览器会话首次访问需要扫码登录。
 `asgi.py` 导出 Vercel 原生 FastAPI 入口，页面和 API 同域，不需要另开容器或常驻 Worker。
 
 1. 在 Vercel 创建独立项目，导入此仓库；框架使用 **FastAPI**，Root Directory 保持仓库根目录。
@@ -44,6 +60,7 @@ COOKIE_SECURE=false DATA_DIR=./data .venv/bin/uvicorn app.main:create_app --fact
    `SUPABASE_URL`/匿名 API key 不能代替 PostgreSQL 连接串。数据库密码和加密密钥均不得使用 `NEXT_PUBLIC_` 前缀。
    运行时关闭 prepared statements；每个实例最多并行一个数据库操作，网络等待期间不持有数据库连接。
    远程数据库强制 SSL，保留连接串中更强的 `verify-full` 验证配置。
+   自动移除 Marketplace 连接 URL 的 `supa` 标记，避免将它作为不支持的 libpq 参数。
 
    密钥生成：
 
@@ -65,7 +82,7 @@ COOKIE_SECURE=false DATA_DIR=./data .venv/bin/uvicorn app.main:create_app --fact
 6. 检查 `/health` HTTP 200（会验证数据库表），再检查首页、`/api/session`、二维码生成/轮询。
    真实扫码和文稿下载需要账号所有者在 App 中确认后验证。
 
-Vercel 环境缺少数据库连接时会明确报错，不回退到本地 SQLite。登录信息和最后一份文稿有效期 30 天，
+缺少数据库连接或加密密钥时会明确报错。登录信息和最后一份文稿有效期 30 天，
 过期记录在新建会话时分批清理；服务端没有未加密的账号 Token 表，也没有前端 Supabase 直连。
 
 Preview 如需独立测试，连接另一份 Supabase 测试数据库。Production/Preview 共用数据库时必须使用同一加密密钥，
@@ -73,26 +90,6 @@ Preview 如需独立测试，连接另一份 Supabase 测试数据库。Producti
 
 参考：[Vercel FastAPI](https://vercel.com/docs/frameworks/backend/fastapi)、
 [Supabase 连接池](https://supabase.com/docs/guides/database/connecting-to-postgres)。
-
-## Railway 部署
-
-1. 将本目录提交到用户确定的 GitHub 仓库。
-2. 在 Railway 创建独立服务并连接该仓库，使用仓库内 Dockerfile 与 railway.toml。
-3. 添加持久卷，挂载到 `/data`。SQLite 与本机回退密钥必须跨部署保留。
-4. 设 `DATA_DIR=/data`、`COOKIE_SECURE=true`。
-5. 推荐生成 `TOKEN_ENCRYPTION_KEY` 并作为 Railway 变量保存：
-
-   ```sh
-   python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'
-   ```
-
-   不要把密钥放入 Git 仓库。不要随意变更此变量；旧数据需要原密钥才能解密。
-6. 保持 **一个副本、一个 Uvicorn worker**。这是个人服务，SQLite 和进程内互斥不支持横向扩容。
-7. 生成 Railway 域名，目标端口为 `PORT`（默认 8080）；健康检查为 `/health`。
-8. 打开手机网页，生成二维码，用小宇宙 App 扫码并确认，再粘贴单集链接。
-
-Dockerfile 信任平台传入的代理头，应部署在 Railway 的 HTTP 代理之后；
-自行部署时请把 `--forwarded-allow-ips` 改为实际可信代理地址。
 
 ## 已验证与待验证
 

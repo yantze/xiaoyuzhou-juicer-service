@@ -51,14 +51,27 @@ def make_store(postgres):
     return PostgresStore(*postgres)
 
 
-def test_backend_requires_durable_configuration(tmp_path, monkeypatch):
+def test_marketplace_url_accepts_integration_marker_without_losing_ssl():
+    store = PostgresStore(
+        "postgres://postgres.example:p%40ss@pooler.example.com:6543/postgres?sslmode=verify-full&supa=fixture",
+        Fernet.generate_key().decode(),
+    )
+    assert store.connection_options["password"] == "p@ss"
+    assert store.connection_options["sslmode"] == "verify-full"
+    assert store.connection_options["port"] == "6543"
+    assert "supa" not in store.connection_options
+
+
+@pytest.mark.parametrize("on_vercel", [False, True])
+def test_backend_requires_durable_configuration(monkeypatch, on_vercel):
     for name in ("DATABASE_URL", "POSTGRES_URL", "SUPABASE_DB_URL"):
         monkeypatch.delenv(name, raising=False)
-    monkeypatch.setenv("VERCEL", "1")
-    monkeypatch.setenv("DATA_DIR", str(tmp_path / "must-not-exist"))
+    if on_vercel:
+        monkeypatch.setenv("VERCEL", "1")
+    else:
+        monkeypatch.delenv("VERCEL", raising=False)
     with pytest.raises(ValueError, match="Vercel requires"):
         create_backend()
-    assert not (tmp_path / "must-not-exist").exists()
     monkeypatch.setenv("POSTGRES_URL", "postgresql://fixture:fixture@localhost/db")
     monkeypatch.delenv("TOKEN_ENCRYPTION_KEY", raising=False)
     with pytest.raises(ValueError, match="TOKEN_ENCRYPTION_KEY"):
@@ -67,7 +80,8 @@ def test_backend_requires_durable_configuration(tmp_path, monkeypatch):
     store = create_backend()
     assert isinstance(store, PostgresStore)
     assert store.connection_options["prepare_threshold"] is None
-    assert store.connection_options["sslmode"] == "require"
+    if on_vercel:
+        assert store.connection_options["sslmode"] == "require"
 
 
 def test_postgres_storage_encryption_expiry_and_role_isolation(postgres):

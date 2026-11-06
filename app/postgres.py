@@ -11,6 +11,7 @@ import secrets
 import time
 from contextlib import asynccontextmanager, suppress
 from contextvars import ContextVar
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import psycopg
 from cryptography.fernet import Fernet, InvalidToken
@@ -32,6 +33,12 @@ class PostgresStore:
             raise ValueError("Supabase storage requires TOKEN_ENCRYPTION_KEY")
         try:
             self.cipher = Fernet(key.encode())
+            if dsn.startswith(("postgres://", "postgresql://")):
+                # Marketplace URLs include a Supabase integration marker that
+                # libpq does not accept as a connection option.
+                url = urlsplit(dsn)
+                query = [(k, v) for k, v in parse_qsl(url.query, keep_blank_values=True) if k != "supa"]
+                dsn = urlunsplit(url._replace(query=urlencode(query)))
             self.connection_options = conninfo_to_dict(dsn)
         except (ValueError, psycopg.Error):
             raise ValueError("Invalid database or encryption configuration") from None
